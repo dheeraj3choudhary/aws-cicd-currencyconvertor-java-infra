@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ECR stack for the Currency Converter portfolio project.
+  Creates the Docker image repository that the app pipeline pushes to
+  and Elastic Beanstalk EC2 instances pull from.
+  Deployed by the infra pipeline after iam.yml.
+
+Resources:
+
+  # -------------------------------------------------------------------------
+  # ECR Repository
+  # -------------------------------------------------------------------------
+  CurrencyConverterRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: currency-converter
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the last 5 images, expire older ones",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+# ---------------------------------------------------------------------------
+# Outputs — referenced by buildspec-docker.yml and beanstalk.yml
+# ---------------------------------------------------------------------------
+Outputs:
+
+  RepositoryUri:
+    Description: Full ECR repository URI used by Docker push and Dockerrun.aws.json
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.us-west-2.amazonaws.com/currency-converter"
+    Export:
+      Name: currency-converter-ecr-uri
+
+  RepositoryName:
+    Description: ECR repository name
+    Value: !Ref CurrencyConverterRepository
+    Export:
+      Name: currency-converter-ecr-name

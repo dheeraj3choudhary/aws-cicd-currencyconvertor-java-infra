@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  IAM stack for the Currency Converter portfolio project.
+  Creates the EC2 instance profile (attached to Beanstalk EC2 instances)
+  and the Elastic Beanstalk service role.
+  Deployed by the infra pipeline before ecr, s3, and beanstalk stacks.
+
+Resources:
+
+  # -------------------------------------------------------------------------
+  # 1. EC2 Instance Profile Role
+  #    Attached to EC2 instances launched by Elastic Beanstalk.
+  #    Needs: ECR pull, SSM read, S3 read (EB internal), CloudWatch Logs write.
+  # -------------------------------------------------------------------------
+  BeanstalkEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: currency-converter-ec2-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Required by Elastic Beanstalk for health reporting and log streaming
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier
+      Policies:
+        - PolicyName: currency-converter-ec2-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+
+              # ECR — pull the Docker image at container startup
+              - Sid: ECRAuth
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+
+              - Sid: ECRPull
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource:
+                  - !Sub "arn:aws:ecr:us-west-2:${AWS::AccountId}:repository/currency-converter"
+
+              # SSM — read the API key and inject as env var into the container
+              - Sid: SSMGetApiKey
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub "arn:aws:ssm:us-west-2:${AWS::AccountId}:parameter/currency-converter/*"
+
+              # KMS — decrypt the SecureString SSM parameter
+              - Sid: KMSDecrypt
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: "ssm.us-west-2.amazonaws.com"
+
+              # CloudWatch Logs — write application logs from inside the container
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub "arn:aws:logs:us-west-2:${AWS::AccountId}:log-group:/aws/elasticbeanstalk/currency-converter*"
+
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 2. EC2 Instance Profile
+  #    Wraps the role so it can be attached to EC2 instances
+  # -------------------------------------------------------------------------
+  BeanstalkEC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: currency-converter-ec2-instance-profile
+      Roles:
+        - !Ref BeanstalkEC2Role
+
+  # -------------------------------------------------------------------------
+  # 3. Elastic Beanstalk Service Role
+  #    Used by the Beanstalk service itself (not the EC2 instances) to manage
+  #    resources on your behalf — health monitoring, managed updates, etc.
+  # -------------------------------------------------------------------------
+  BeanstalkServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: currency-converter-beanstalk-service-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticbeanstalk.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+# ---------------------------------------------------------------------------
+# Outputs — referenced by beanstalk.yml via ImportValue
+# ---------------------------------------------------------------------------
+Outputs:
+
+  EC2InstanceProfileName:
+    Description: Instance profile name attached to Beanstalk EC2 instances
+    Value: !Ref BeanstalkEC2InstanceProfile
+    Export:
+      Name: currency-converter-ec2-instance-profile
+
+  EC2RoleArn:
+    Description: ARN of the EC2 instance role
+    Value: !GetAtt BeanstalkEC2Role.Arn
+    Export:
+      Name: currency-converter-ec2-role-arn
+
+  BeanstalkServiceRoleArn:
+    Description: ARN of the Beanstalk service role
+    Value: !GetAtt BeanstalkServiceRole.Arn
+    Export:
+      Name: currency-converter-beanstalk-service-role-arn

@@ -1,0 +1,54 @@
+version: 0.2
+
+# ---------------------------------------------------------------------------
+# buildspec-infra.yml
+# Executed by: currency-converter-infra-build (CodeBuild)
+# Stage: Validate (second stage of currency-converter-infra-pipeline)
+#
+# 1. Validates all CloudFormation templates using cfn-lint
+# 2. Fetches the API key from SSM SecureString and writes beanstalk-params.json
+#    which is consumed by the DeployBeanstalk CFN action via ParameterOverrides.
+#
+# Fetching in CodeBuild is the correct pattern because:
+#   - SSM SecureString is not supported in Beanstalk OptionSettings
+#   - CodeBuild has IAM permissions to call ssm:GetParameter with decryption
+#   - The value is passed via artifact JSON, never hardcoded anywhere
+# ---------------------------------------------------------------------------
+
+phases:
+
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - echo "Installing cfn-lint..."
+      - pip install cfn-lint --quiet
+
+  build:
+    commands:
+      - echo "Validating CloudFormation templates..."
+      - cfn-lint stacks/iam.yml
+      - echo "  iam.yml OK"
+      - cfn-lint stacks/ecr.yml
+      - echo "  ecr.yml OK"
+      - cfn-lint stacks/s3.yml
+      - echo "  s3.yml OK"
+      - cfn-lint stacks/beanstalk.yml
+      - echo "  beanstalk.yml OK"
+      - echo "All templates passed validation."
+
+      # Fetch API key from SSM SecureString and write ParameterOverrides file
+      - echo "Fetching API key from SSM..."
+      - |
+        API_KEY=$(aws ssm get-parameter \
+          --name "/currency-converter/api-key" \
+          --with-decryption \
+          --query "Parameter.Value" \
+          --output text \
+          --region us-west-2)
+        echo "{\"ExchangeApiKey\":\"$API_KEY\"}" > beanstalk-params.json
+      - echo "beanstalk-params.json written."
+
+artifacts:
+  files:
+    - "**/*"

@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  S3 stack for the Currency Converter portfolio project.
+  Creates the bucket that stores Elastic Beanstalk application versions
+  (the Dockerrun.aws.json zip uploaded by the app pipeline).
+  Deployed by the infra pipeline after iam.yml and ecr.yml.
+
+Resources:
+
+  # -------------------------------------------------------------------------
+  # S3 Bucket — Elastic Beanstalk application versions
+  #
+  # Note: This is separate from the pipeline artifact bucket created in
+  # bootstrap.yml. That bucket holds CodePipeline intermediary artifacts.
+  # This bucket holds the final Dockerrun.aws.json zip that Beanstalk
+  # registers as an application version.
+  # -------------------------------------------------------------------------
+  BeanstalkVersionsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "currency-converter-eb-versions-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            ExpirationInDays: 90
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+# ---------------------------------------------------------------------------
+# Outputs — referenced by beanstalk.yml and buildspec-docker.yml
+# ---------------------------------------------------------------------------
+Outputs:
+
+  BeanstalkVersionsBucketName:
+    Description: S3 bucket storing Elastic Beanstalk application version bundles
+    Value: !Ref BeanstalkVersionsBucket
+    Export:
+      Name: currency-converter-eb-versions-bucket
+
+  BeanstalkVersionsBucketArn:
+    Description: ARN of the EB versions bucket
+    Value: !GetAtt BeanstalkVersionsBucket.Arn
+    Export:
+      Name: currency-converter-eb-versions-bucket-arn

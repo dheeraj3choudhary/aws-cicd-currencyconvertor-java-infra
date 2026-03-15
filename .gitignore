@@ -1,0 +1,16 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# AWS SAM / CDK (not used here, but safety)
+.aws-sam/
+cdk.out/
+
+# Temp / local overrides
+*.local
+*.env

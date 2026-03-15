@@ -1,0 +1,744 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Bootstrap stack for the Currency Converter portfolio project.
+  Deploys this template once manually from the AWS Console.
+  Creates both CodeCommit repos, the shared S3 artifact bucket,
+  all IAM roles, all CodeBuild projects, and both CodePipelines.
+
+  PRE-REQUISITE (run before deploying this stack):
+    aws ssm put-parameter \
+      --name "/currency-converter/api-key" \
+      --value "<your-exchangerate-api-key>" \
+      --type SecureString \
+      --region us-west-2
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  InfraRepoBranch:
+    Type: String
+    Default: master
+    Description: Branch name for the infra CodeCommit repo trigger
+
+  AppRepoBranch:
+    Type: String
+    Default: master
+    Description: Branch name for the app CodeCommit repo trigger
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # -------------------------------------------------------------------------
+  # 1. S3 — Shared artifact bucket for both pipelines
+  # -------------------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "currency-converter-artifacts-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 2. CodeCommit — Infra repo
+  # -------------------------------------------------------------------------
+  InfraRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: currency-converter-infra
+      RepositoryDescription: >
+        CloudFormation stacks and bootstrap pipeline for the
+        Currency Converter portfolio project.
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 3. CodeCommit — App repo
+  # -------------------------------------------------------------------------
+  AppRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: currency-application
+      RepositoryDescription: >
+        Java Spring Boot application, Dockerfile, and pipeline
+        buildspecs for the Currency Converter portfolio project.
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 4. IAM — CodeBuild service role
+  #    Shared by all three CodeBuild projects
+  # -------------------------------------------------------------------------
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: currency-converter-codebuild-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: currency-converter-codebuild-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+
+              # CloudWatch Logs — write build logs
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:aws:logs:us-west-2:${AWS::AccountId}:log-group:/aws/codebuild/currency-converter-*"
+
+              # S3 — read/write artifacts
+              - Sid: S3Artifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub "arn:aws:s3:::currency-converter-artifacts-${AWS::AccountId}-${AWS::Region}"
+                  - !Sub "arn:aws:s3:::currency-converter-artifacts-${AWS::AccountId}-${AWS::Region}/*"
+
+              # CodeCommit — clone repos during build
+              - Sid: CodeCommitPull
+                Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                Resource:
+                  - !GetAtt InfraRepo.Arn
+                  - !GetAtt AppRepo.Arn
+
+              # ECR — push/pull Docker images (app docker build project)
+              - Sid: ECRAuth
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+
+              - Sid: ECRReadWrite
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource:
+                  - !Sub "arn:aws:ecr:us-west-2:${AWS::AccountId}:repository/currency-converter"
+
+              # SSM — resolve the API key during infra deploy and app config
+              - Sid: SSMGetApiKey
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub "arn:aws:ssm:us-west-2:${AWS::AccountId}:parameter/currency-converter/*"
+
+              # CloudFormation — infra build project deploys CFN stacks
+              - Sid: CloudFormationDeploy
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DescribeChangeSet
+                Resource:
+                  - !Sub "arn:aws:cloudformation:us-west-2:${AWS::AccountId}:stack/currency-converter-*"
+
+              # IAM — infra build creates IAM roles via CFN (PassRole + limited create)
+              - Sid: IAMPassRole
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/currency-converter-*"
+
+              - Sid: IAMManage
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:GetInstanceProfile
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/currency-converter-*"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:instance-profile/currency-converter-*"
+
+              # ECR repo creation — infra build creates the ECR repo via CFN
+              - Sid: ECRManage
+                Effect: Allow
+                Action:
+                  - ecr:CreateRepository
+                  - ecr:DeleteRepository
+                  - ecr:DescribeRepositories
+                  - ecr:SetRepositoryPolicy
+                  - ecr:DeleteRepositoryPolicy
+                  - ecr:TagResource
+                Resource:
+                  - !Sub "arn:aws:ecr:us-west-2:${AWS::AccountId}:repository/currency-converter"
+
+              # Elastic Beanstalk — infra build creates/updates EB environment via CFN
+              - Sid: ElasticBeanstalk
+                Effect: Allow
+                Action:
+                  - elasticbeanstalk:*
+                Resource:
+                  - !Sub "arn:aws:elasticbeanstalk:us-west-2:${AWS::AccountId}:application/currency-converter"
+                  - !Sub "arn:aws:elasticbeanstalk:us-west-2:${AWS::AccountId}:environment/currency-converter/*"
+                  - !Sub "arn:aws:elasticbeanstalk:us-west-2:${AWS::AccountId}:applicationversion/currency-converter/*"
+                  - "arn:aws:elasticbeanstalk:us-west-2::solutionstack/*"
+
+              # EC2 — EB needs to describe/manage EC2 resources
+              - Sid: EC2ForBeanstalk
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeKeyPairs
+                  - ec2:DescribeImages
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeAutoScalingInstances
+                  - autoscaling:DescribeLaunchConfigurations
+                  - elasticloadbalancing:DescribeLoadBalancers
+                Resource: "*"
+
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 5. IAM — CodePipeline service role
+  #    Shared by both pipelines
+  # -------------------------------------------------------------------------
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: currency-converter-codepipeline-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 5b. IAM — CloudFormation deploy role
+  #     Assumed by CloudFormation when the infra pipeline deploys stacks.
+  #     Uses AdministratorAccess so CFN can create any resource defined
+  #     in the stacks (IAM, ECR, S3, Beanstalk, EC2, autoscaling etc.)
+  #     This is the standard pattern for CFN pipeline deploy roles.
+  # -------------------------------------------------------------------------
+  CloudFormationDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: currency-converter-cfn-deploy-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 6. CodeBuild — Infra build project
+  #    Deploys CloudFormation stacks from currency-converter-infra repo
+  # -------------------------------------------------------------------------
+  InfraBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: currency-converter-infra-build
+      Description: Deploys CloudFormation stacks for the currency converter infra
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: us-west-2
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: pipeline/buildspec-infra.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/currency-converter-infra-build
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 7. CodeBuild — App build project (compile + test)
+  # -------------------------------------------------------------------------
+  AppBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: currency-converter-app-build
+      Description: Compiles and tests the Spring Boot application
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: us-west-2
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: pipeline/buildspec-build.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/currency-converter-app-build
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 8. CodeBuild — App docker project (docker build + ECR push + Dockerrun)
+  # -------------------------------------------------------------------------
+  AppDockerProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: currency-converter-app-docker
+      Description: Builds Docker image, pushes to ECR, generates Dockerrun.aws.json
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true          # Required for Docker daemon access
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: us-west-2
+          - Name: ECR_REPO_URI
+            Value: !Sub "${AWS::AccountId}.dkr.ecr.us-west-2.amazonaws.com/currency-converter"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: pipeline/buildspec-docker.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: /aws/codebuild/currency-converter-app-docker
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 9. CodePipeline — Infra pipeline
+  #    Source → Validate → Deploy-Infra
+  #
+  #    Deploy-Infra stage has 4 CFN actions sequenced by RunOrder:
+  #      RunOrder 1 — DeployIAM        (roles must exist first)
+  #      RunOrder 2 — DeployECR        (parallel with S3, both need IAM)
+  #      RunOrder 2 — DeployS3         (parallel with ECR, both need IAM)
+  #      RunOrder 3 — DeployBeanstalk  (needs IAM + S3)
+  # -------------------------------------------------------------------------
+  InfraPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: currency-converter-infra-pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+
+        # Stage 1 — Source
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: currency-converter-infra
+                BranchName: !Ref InfraRepoBranch
+                PollForSourceChanges: "false"
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+        # Stage 2 — Validate (cfn-lint all templates, fail fast before touching resources)
+        - Name: Validate
+          Actions:
+            - Name: ValidateCFNTemplates
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref InfraBuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: ValidatedOutput
+              RunOrder: 1
+
+        # Stage 3 — Deploy all CFN stacks in dependency order via RunOrder
+        - Name: Deploy-Infra
+          Actions:
+
+            # RunOrder 1 — IAM roles and instance profile must exist before all else
+            - Name: DeployIAM
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: currency-converter-iam
+                TemplatePath: SourceOutput::stacks/iam.yml
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationDeployRole.Arn
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+            # RunOrder 2 — ECR and S3 both depend only on IAM, deploy in parallel
+            - Name: DeployECR
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: currency-converter-ecr
+                TemplatePath: SourceOutput::stacks/ecr.yml
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationDeployRole.Arn
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 2
+
+            - Name: DeployS3
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: currency-converter-s3
+                TemplatePath: SourceOutput::stacks/s3.yml
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationDeployRole.Arn
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 2
+
+            # RunOrder 3 — Beanstalk depends on IAM (instance profile) and S3 (eb versions bucket)
+            - Name: DeployBeanstalk
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: currency-converter-beanstalk
+                TemplatePath: SourceOutput::stacks/beanstalk.yml
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationDeployRole.Arn
+                ParameterOverrides: |
+                  {
+                    "ExchangeApiKey": { "Fn::GetParam": ["ValidatedOutput", "beanstalk-params.json", "ExchangeApiKey"] }
+                  }
+              InputArtifacts:
+                - Name: SourceOutput
+                - Name: ValidatedOutput
+              RunOrder: 3
+
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 10. EventBridge rule — triggers infra pipeline on CodeCommit push
+  # -------------------------------------------------------------------------
+  InfraPipelineTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: currency-converter-infra-trigger-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: currency-converter-infra-trigger-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub "arn:aws:codepipeline:us-west-2:${AWS::AccountId}:currency-converter-infra-pipeline"
+
+  InfraPipelineTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: currency-converter-infra-trigger
+      Description: Triggers infra pipeline when code is pushed to currency-converter-infra master
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !GetAtt InfraRepo.Arn
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref InfraRepoBranch
+      State: ENABLED
+      Targets:
+        - Id: InfraPipelineTarget
+          Arn: !Sub "arn:aws:codepipeline:us-west-2:${AWS::AccountId}:currency-converter-infra-pipeline"
+          RoleArn: !GetAtt InfraPipelineTriggerRole.Arn
+
+  # -------------------------------------------------------------------------
+  # 11. CodePipeline — App pipeline
+  #     Source → Build & Test → Docker & Push → Beanstalk Deploy
+  # -------------------------------------------------------------------------
+  AppPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: currency-converter-app-pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+
+        # Stage 1 — Source
+        - Name: Source
+          Actions:
+            - Name: AppSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: currency-application
+                BranchName: !Ref AppRepoBranch
+                PollForSourceChanges: "false"   # EventBridge rule handles triggering
+              OutputArtifacts:
+                - Name: AppSourceArtifact
+              RunOrder: 1
+
+        # Stage 2 — Build and test (mvn test + package)
+        - Name: BuildAndTest
+          Actions:
+            - Name: MavenBuildTest
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref AppBuildProject
+              InputArtifacts:
+                - Name: AppSourceArtifact
+              OutputArtifacts:
+                - Name: AppBuildArtifact
+              RunOrder: 1
+
+        # Stage 3 — Docker build, ECR push, generate Dockerrun.aws.json
+        - Name: DockerAndPush
+          Actions:
+            - Name: DockerBuildPush
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref AppDockerProject
+              InputArtifacts:
+                - Name: AppBuildArtifact
+              OutputArtifacts:
+                - Name: AppDockerArtifact
+              RunOrder: 1
+
+        # Stage 4 — Deploy to Elastic Beanstalk
+        - Name: DeployToElasticBeanstalk
+          Actions:
+            - Name: BeanstalkDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ElasticBeanstalk
+                Version: "1"
+              Configuration:
+                ApplicationName: currency-converter
+                EnvironmentName: currency-converter-env
+              InputArtifacts:
+                - Name: AppDockerArtifact
+              RunOrder: 1
+
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+  # -------------------------------------------------------------------------
+  # 12. EventBridge rule — triggers app pipeline on CodeCommit push
+  # -------------------------------------------------------------------------
+  AppPipelineTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: currency-converter-app-trigger-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: currency-converter-app-trigger-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub "arn:aws:codepipeline:us-west-2:${AWS::AccountId}:currency-converter-app-pipeline"
+
+  AppPipelineTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: currency-converter-app-trigger
+      Description: Triggers app pipeline when code is pushed to currency-application master
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !GetAtt AppRepo.Arn
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref AppRepoBranch
+      State: ENABLED
+      Targets:
+        - Id: AppPipelineTarget
+          Arn: !Sub "arn:aws:codepipeline:us-west-2:${AWS::AccountId}:currency-converter-app-pipeline"
+          RoleArn: !GetAtt AppPipelineTriggerRole.Arn
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+
+  ArtifactBucketName:
+    Description: Shared S3 artifact bucket used by both pipelines
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: currency-converter-artifact-bucket
+
+  InfraRepoCloneUrlHttp:
+    Description: HTTP clone URL for the infra repo
+    Value: !GetAtt InfraRepo.CloneUrlHttp
+    Export:
+      Name: currency-converter-infra-repo-url
+
+  AppRepoCloneUrlHttp:
+    Description: HTTP clone URL for the app repo
+    Value: !GetAtt AppRepo.CloneUrlHttp
+    Export:
+      Name: currency-converter-app-repo-url
+
+  InfraPipelineUrl:
+    Description: Direct link to the infra pipeline in the AWS Console
+    Value: !Sub "https://us-west-2.console.aws.amazon.com/codesuite/codepipeline/pipelines/currency-converter-infra-pipeline/view"
+
+  AppPipelineUrl:
+    Description: Direct link to the app pipeline in the AWS Console
+    Value: !Sub "https://us-west-2.console.aws.amazon.com/codesuite/codepipeline/pipelines/currency-converter-app-pipeline/view"

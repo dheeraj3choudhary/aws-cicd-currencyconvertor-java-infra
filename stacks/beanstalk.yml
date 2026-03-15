@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Elastic Beanstalk stack for the Currency Converter portfolio project.
+  Creates the Beanstalk application and a single Docker environment.
+  Deployed by the infra pipeline last, after iam, ecr, and s3 stacks.
+  References IAM outputs via ImportValue.
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+
+  SolutionStackName:
+    Type: String
+    Default: "64bit Amazon Linux 2023 v4.11.0 running Docker"
+    Description: >
+      Elastic Beanstalk Docker solution stack. Update this value when AWS
+      releases a newer Amazon Linux 2023 Docker platform version.
+
+  EC2InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type for the Beanstalk environment
+
+  ExchangeApiKey:
+    Type: String
+    NoEcho: true
+    Description: >
+      exchangerate-api.com API key. Passed at deploy time via ParameterOverrides
+      in the infra pipeline — resolved from SSM SecureString by CodePipeline.
+      NoEcho ensures it never appears in CFN console or stack events.
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # -------------------------------------------------------------------------
+  # 1. Elastic Beanstalk Application
+  # -------------------------------------------------------------------------
+  BeanstalkApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: currency-converter
+      Description: Currency Converter Spring Boot app running in Docker on Elastic Beanstalk
+
+  # -------------------------------------------------------------------------
+  # 2. Elastic Beanstalk Environment
+  # -------------------------------------------------------------------------
+  BeanstalkEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref BeanstalkApplication
+      EnvironmentName: currency-converter-env
+      Description: Single Docker environment for the Currency Converter app
+      SolutionStackName: !Ref SolutionStackName
+      Tier:
+        Name: WebServer
+        Type: Standard
+
+      OptionSettings:
+
+        # ------------------------------------------------------------------
+        # Instance profile — allows EC2 to pull from ECR and read SSM
+        # ------------------------------------------------------------------
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value:
+            Fn::ImportValue: currency-converter-ec2-instance-profile
+
+        # ------------------------------------------------------------------
+        # Instance type
+        # ------------------------------------------------------------------
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: !Ref EC2InstanceType
+
+        # ------------------------------------------------------------------
+        # Beanstalk service role — used by EB service for health + updates
+        # ------------------------------------------------------------------
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: ServiceRole
+          Value:
+            Fn::ImportValue: currency-converter-beanstalk-service-role-arn
+
+        # ------------------------------------------------------------------
+        # Environment type — SingleInstance (no load balancer, saves cost)
+        # ------------------------------------------------------------------
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: EnvironmentType
+          Value: SingleInstance
+
+        # ------------------------------------------------------------------
+        # Application port — Spring Boot listens on 8080, EB proxies to it
+        # ------------------------------------------------------------------
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: SERVER_PORT
+          Value: "8080"
+
+        # ------------------------------------------------------------------
+        # API key — injected as env var. Value passed via ParameterOverrides
+        # in the infra pipeline, resolved from SSM SecureString by CodePipeline.
+        # NoEcho on the parameter prevents it appearing in CFN stack events.
+        # ------------------------------------------------------------------
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: EXCHANGE_API_KEY
+          Value: !Ref ExchangeApiKey
+
+        # ------------------------------------------------------------------
+        # Health reporting — enhanced gives better visibility in console
+        # ------------------------------------------------------------------
+        - Namespace: aws:elasticbeanstalk:healthreporting:system
+          OptionName: SystemType
+          Value: enhanced
+
+        # ------------------------------------------------------------------
+        # Deployment policy — Rolling with additional batch avoids downtime
+        # on updates. All-at-once is simpler but causes brief downtime.
+        # Using AllAtOnce for single instance (only one instance anyway).
+        # ------------------------------------------------------------------
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: DeploymentPolicy
+          Value: AllAtOnce
+
+        # ------------------------------------------------------------------
+        # CloudWatch Logs — stream environment health logs
+        # ------------------------------------------------------------------
+        - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+          OptionName: StreamLogs
+          Value: "true"
+
+        - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+          OptionName: RetentionInDays
+          Value: "7"
+
+      Tags:
+        - Key: Project
+          Value: currency-converter
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+
+  BeanstalkApplicationName:
+    Description: Elastic Beanstalk application name (referenced by app pipeline deploy stage)
+    Value: !Ref BeanstalkApplication
+    Export:
+      Name: currency-converter-eb-application-name
+
+  BeanstalkEnvironmentName:
+    Description: Elastic Beanstalk environment name (referenced by app pipeline deploy stage)
+    Value: !Ref BeanstalkEnvironment
+    Export:
+      Name: currency-converter-eb-environment-name
