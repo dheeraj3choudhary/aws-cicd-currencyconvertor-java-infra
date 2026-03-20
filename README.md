@@ -37,40 +37,6 @@ The companion application repository is [currency-application](https://github.co
 
 
 ---
-
-## Architecture Overview
-
-```
-                        ┌─────────────────────────────────────────┐
-                        │           bootstrap.yml (one-time)       │
-                        │  Creates repos, pipelines, IAM, S3       │
-                        └───────────────┬─────────────────────────┘
-                                        │
-              ┌─────────────────────────┴──────────────────────────┐
-              │                                                      │
-              ▼                                                      ▼
-  ┌───────────────────────┐                          ┌───────────────────────┐
-  │  currency-converter   │                          │   currency-application │
-  │       -infra          │                          │        repo            │
-  │  (this repo)          │                          │  (app repo)            │
-  └──────────┬────────────┘                          └──────────┬────────────┘
-             │ push                                             │ push
-             ▼                                                  ▼
-  ┌───────────────────────┐                          ┌───────────────────────┐
-  │   infra pipeline      │                          │    app pipeline        │
-  │  buildspec-infra.yml  │                          │  buildspec-build.yml   │
-  └──────────┬────────────┘                          │  buildspec-docker.yml  │
-             │                                       └──────────┬────────────┘
-             ▼                                                  │
-  ┌───────────────────────┐                                     ▼
-  │  CFN Stacks (in order)│                          ┌───────────────────────┐
-  │  1. iam.yml           │                          │  Elastic Beanstalk    │
-  │  2. ecr.yml           │◄─────────────────────────│  Docker environment   │
-  │  3. s3.yml            │   app deploys here       │                       │
-  │  4. beanstalk.yml     │                          └───────────────────────┘
-  └───────────────────────┘
-```
-
 ## Repository Structure
 
 ```
