@@ -4,6 +4,7 @@
 Infrastructure repository for the Currency Converter portfolio project.Contains all CloudFormation stacks, the bootstrap template, and the teardown script.
 The companion application repository is [currency-application](https://github.com/dheeraj3choudhary/aws-cicd-currencyconvertor-java-application).
 
+<img width="4000" height="2250" alt="AWS_CICD_Series (1)" src="https://github.com/user-attachments/assets/e04643a7-b970-46fe-9e18-fc608db2d76b" />
 
 
 [![AWS CloudFormation](https://img.shields.io/badge/CloudFormation-FF4F8B?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com/cloudformation/)
